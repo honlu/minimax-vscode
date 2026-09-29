@@ -6,6 +6,7 @@ import { TokenCounter } from "./utils/TokenCounter";
 import {
   CONFIG_SECTION,
   VISIBLE_MODELS_KEY,
+  CUSTOM_MODELS_KEY,
   API_BASE_URL_KEY,
 } from "./utils/ModelConfig";
 
@@ -20,6 +21,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (
         event.affectsConfiguration(`${CONFIG_SECTION}.${VISIBLE_MODELS_KEY}`) ||
+        event.affectsConfiguration(`${CONFIG_SECTION}.${CUSTOM_MODELS_KEY}`) ||
         event.affectsConfiguration(`${CONFIG_SECTION}.${API_BASE_URL_KEY}`)
       ) {
         provider.notifyModelsChanged();

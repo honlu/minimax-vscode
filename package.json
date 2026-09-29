@@ -62,17 +62,7 @@
         "minimax.visibleModels": {
           "type": "array",
           "items": {
-            "type": "string",
-            "enum": [
-              "MiniMax-M3",
-              "MiniMax-M2.7",
-              "MiniMax-M2.7-highspeed",
-              "MiniMax-M2.5",
-              "MiniMax-M2.5-highspeed",
-              "MiniMax-M2.1",
-              "MiniMax-M2.1-highspeed",
-              "MiniMax-M2"
-            ]
+            "type": "string"
           },
           "default": [
             "MiniMax-M3",
@@ -86,7 +76,51 @@
           ],
           "uniqueItems": true,
           "scope": "application",
-          "markdownDescription": "Programming text models (M2 / M2.1 / M2.5 / M2.7) for Token Plan. Order matches [MiniMax M2.7 for AI coding](https://platform.minimax.io/docs/guides/text-ai-coding-tools). Role-play (M2-her) is not included."
+          "markdownDescription": "Programming text models (M2 / M2.1 / M2.5 / M2.7) for Token Plan. Order matches [MiniMax M2.7 for AI coding](https://platform.minimax.io/docs/guides/text-ai-coding-tools). Role-play (M2-her) is not included. IDs defined in `minimax.customModels` can also be listed here."
+        },
+        "minimax.customModels": {
+          "type": "array",
+          "default": [],
+          "scope": "application",
+          "markdownDescription": "Additional models not built into the extension. Each entry needs an `id` (the model ID sent to the API, e.g. `MiniMax-M3.1-Flash-Preview`); `name`, `apiModelId`, `contextLength`, `maxInputTokens`, `maxOutputTokens` and `imageInput` are optional. Changes apply immediately — no extension update needed.",
+          "items": {
+            "type": "object",
+            "required": ["id"],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+                "description": "Model ID shown in the picker and sent to the API (unless apiModelId is set)."
+              },
+              "name": {
+                "type": "string",
+                "description": "Display name in the model picker. Defaults to id."
+              },
+              "apiModelId": {
+                "type": "string",
+                "description": "Actual model ID sent to the MiniMax API, when it differs from id."
+              },
+              "contextLength": {
+                "type": "integer",
+                "minimum": 1,
+                "default": 204800
+              },
+              "maxInputTokens": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "maxOutputTokens": {
+                "type": "integer",
+                "minimum": 1,
+                "default": 8192
+              },
+              "imageInput": {
+                "type": "boolean",
+                "default": false,
+                "description": "Whether the model accepts image input (multimodal)."
+              }
+            }
+          }
         }
       }
     },
@@ -101,7 +135,7 @@
               "type": "string",
               "secret": true,
               "title": "API key",
-              "description": "MiniMax Token Plan API key from platform.minimax.io (Account / Token Plan)."
+              "description": "MiniMax Token Plan API key. Get it from platform.minimax.io (international) or platform.minimaxi.com (China) — must match minimax.apiBaseUrl."
             }
           },
           "required": [

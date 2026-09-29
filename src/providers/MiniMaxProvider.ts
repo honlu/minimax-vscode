@@ -1,12 +1,12 @@
 ﻿import * as vscode from "vscode";
 import { MiniMaxClient, type ChatOptions } from "../api/MiniMaxClient";
 import { MiniMaxError } from "../api/MiniMaxError";
-import { getModelById, resolveModelIdForApi } from "../api/types";
 import { convertMessages } from "../utils/MessageConverter";
 import {
   getApiBaseUrl,
   modelsWithApiKey,
   resolveMaxTokens,
+  resolveModelInfo,
   resolveTemperature,
   resolveTopP,
 } from "../utils/ModelConfig";
@@ -30,7 +30,27 @@ import { MiniMaxAuthentication } from "./MiniMaxAuthentication";
 
 type PrepareOptionsWithConfiguration = vscode.PrepareLanguageModelChatModelOptions & {
   configuration?: Record<string, unknown>;
+  modelConfiguration?: Record<string, unknown>;
 };
+
+function getObjectProperty(source: unknown, key: string): unknown {
+  if (!source || typeof source !== "object") {
+    return undefined;
+  }
+  return (source as Record<string, unknown>)[key];
+}
+
+function getStringProperty(source: unknown, key: string): string | undefined {
+  if (!source || typeof source !== "object") {
+    return undefined;
+  }
+  const value = (source as Record<string, unknown>)[key];
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : undefined;
+}
 
 export class MiniMaxProvider implements vscode.LanguageModelChatProvider {
   private readonly modelsChangedEmitter = new vscode.EventEmitter<void>();
@@ -67,6 +87,16 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider {
       this.modelApiKeys.set(model.id, configuredApiKey);
     }
 
+    // Persist the vendor-configured key into our own secret storage, so that
+    // request-time lookups succeed even when VS Code does not pass the
+    // configuration back to provideLanguageModelChatResponse.
+    // Only write when it actually changed: VS Code calls this method many
+    // times per model-list refresh, and Keychain writes are expensive.
+    const stored = await this.authManager.getApiKey();
+    if (stored !== configuredApiKey) {
+      await this.authManager.storeApiKey(configuredApiKey);
+    }
+
     return models;
   }
 
@@ -77,8 +107,15 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider {
     progress: vscode.Progress<vscode.LanguageModelResponsePart>,
     token: vscode.CancellationToken,
   ): Promise<void> {
+    // Key resolution order:
+    //  1. request options — VS Code passes the vendor config here
+    //  2. in-memory cache — filled during provideLanguageModelChatInformation
+    //  3. our own secret storage — fallback for older VS Code versions
+    //  4. prompt the user
     const apiKey =
-      this.modelApiKeys.get(model.id) ?? (await this.authManager.getOrPromptApiKey());
+      this.extractApiKeyFromUnknown(options) ??
+      this.modelApiKeys.get(model.id) ??
+      (await this.authManager.getOrPromptApiKey());
 
     if (!apiKey) {
       throw new Error("API key not configured. Use the API key navigation action in the MiniMax model picker.");
@@ -88,20 +125,56 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider {
       await this.streamResponse(model, messages, options, progress, token, apiKey);
     } catch (error) {
       if (error instanceof MiniMaxError && error.statusCode === 401) {
-        await this.authManager.deleteApiKey();
-        this.notifyModelsChanged();
-        const newKey = await this.authManager.promptForApiKey();
-        this.modelApiKeys.clear();
-        if (newKey) {
-          this.modelApiKeys.set(model.id, newKey);
-          this.notifyModelsChanged();
-          await this.streamResponse(model, messages, options, progress, token, newKey);
-          return;
-        }
-        this.notifyModelsChanged();
-        throw new Error("Invalid API key. Please set a new one using the API key navigation action in the MiniMax model picker.");
+        // Returns normally once the retry has produced a response; only
+        // reaches the mapper below when the retry itself failed and threw.
+        await this.retryWithNewApiKey(model, messages, options, progress, token);
+        return;
       }
-      await MiniMaxErrorMapper.throwMappedError(error, this.authManager);
+      await MiniMaxErrorMapper.throwMappedError(error);
+    }
+  }
+
+  /**
+   * Handles a 401 by asking for a fresh API key and retrying once.
+   *
+   * A 401 does not necessarily mean the key is wrong — it is also what the API
+   * returns when `minimax.apiBaseUrl` points at a different platform than the
+   * one the key was issued for (minimax.io vs minimaxi.com). We therefore keep
+   * the key in place, and if the retry also fails we surface that hint instead
+   * of silently looping between the prompt and the failing request.
+   */
+  private async retryWithNewApiKey(
+    model: vscode.LanguageModelChatInformation,
+    messages: readonly vscode.LanguageModelChatRequestMessage[],
+    options: vscode.ProvideLanguageModelChatResponseOptions,
+    progress: vscode.Progress<vscode.LanguageModelResponsePart>,
+    token: vscode.CancellationToken,
+  ): Promise<void> {
+    this.notifyModelsChanged();
+    const newKey = await this.authManager.promptForApiKey();
+    this.modelApiKeys.clear();
+
+    if (!newKey) {
+      this.notifyModelsChanged();
+      throw new Error(
+        "Invalid API key. Please set a new one using the API key navigation action in the MiniMax model picker.",
+      );
+    }
+
+    this.modelApiKeys.set(model.id, newKey);
+    this.notifyModelsChanged();
+
+    try {
+      await this.streamResponse(model, messages, options, progress, token, newKey);
+    } catch (retryError) {
+      if (retryError instanceof MiniMaxError && retryError.statusCode === 401) {
+        throw new Error(
+          `Still rejected with HTTP 401 after entering a new key. The key is likely valid for a different platform: ` +
+            `set minimax.apiBaseUrl to https://api.minimax.io/v1 (platform.minimax.io) or ` +
+            `https://api.minimaxi.com/v1 (platform.minimaxi.com) to match where the key was issued.`,
+        );
+      }
+      await MiniMaxErrorMapper.throwMappedError(retryError);
     }
   }
 
@@ -133,7 +206,7 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider {
     token: vscode.CancellationToken,
     apiKey: string,
   ): Promise<void> {
-    const resolvedModel = getModelById(model.id);
+    const resolvedModel = resolveModelInfo(model.id);
     if (!resolvedModel) {
       throw new Error(`Unsupported model "${model.id}" for MiniMax (coding / Token Plan).`);
     }
@@ -159,8 +232,8 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider {
       chatOptions.topP = topP;
     }
 
-    const stream = this.apiClient.streamChat(
-      resolveModelIdForApi(resolvedModel.id),
+    const stream = await this.apiClient.streamChat(
+      resolvedModel.apiModelId ?? resolvedModel.id,
       convertMessages(messages),
       chatOptions,
       token,
@@ -224,17 +297,20 @@ export class MiniMaxProvider implements vscode.LanguageModelChatProvider {
   private extractConfiguredApiKey(
     options: PrepareOptionsWithConfiguration,
   ): string | undefined {
-    const config = options.configuration;
-    if (!config || typeof config !== "object") {
-      return undefined;
-    }
+    return this.extractApiKeyFromUnknown(options);
+  }
 
-    const apiKey = config.apiKey;
-    if (typeof apiKey !== "string") {
-      return undefined;
+  private extractApiKeyFromUnknown(options: unknown): string | undefined {
+    // VS Code 1.120+ passes provider config as `modelConfiguration`;
+    // older versions use `configuration`. Read both.
+    const fromModelConfig = getStringProperty(getObjectProperty(options, "modelConfiguration"), "apiKey");
+    if (fromModelConfig) {
+      return fromModelConfig;
     }
-
-    const normalized = apiKey.trim();
-    return normalized.length > 0 ? normalized : undefined;
+    const fromLegacyConfig = getStringProperty(getObjectProperty(options, "configuration"), "apiKey");
+    if (fromLegacyConfig) {
+      return fromLegacyConfig;
+    }
+    return undefined;
   }
 }

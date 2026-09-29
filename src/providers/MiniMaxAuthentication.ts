@@ -9,17 +9,17 @@ export class MiniMaxAuthentication {
     return this.secrets.get(API_KEY_SECRET_KEY);
   }
 
+  async storeApiKey(key: string): Promise<void> {
+    await this.secrets.store(API_KEY_SECRET_KEY, key.trim());
+  }
+
   async getOrPromptApiKey(): Promise<string | undefined> {
     return (await this.getApiKey()) ?? this.promptForApiKey();
   }
 
-  async deleteApiKey(): Promise<void> {
-    await this.secrets.delete(API_KEY_SECRET_KEY);
-  }
-
   async promptForApiKey(): Promise<string | undefined> {
     const input = await vscode.window.showInputBox({
-      prompt: "MiniMax Token Plan API key (from platform.minimax.io)",
+      prompt: "MiniMax Token Plan API key (platform.minimax.io or platform.minimaxi.com — must match minimax.apiBaseUrl)",
       password: true,
       placeHolder: "Paste API key",
       ignoreFocusOut: true,

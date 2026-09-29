@@ -78,15 +78,14 @@ export const MODEL_IDS = [
 export type ModelId = (typeof MODEL_IDS)[number];
 
 export interface ModelInfo {
-  id: ModelId;
+  id: string;
   name: string;
   contextLength: number;
   maxInputTokens: number;
   maxOutputTokens: number;
   apiModelId?: string;
+  imageInput?: boolean;
 }
-
-export const DEFAULT_MODEL_ID: ModelId = "MiniMax-M3";
 
 const CTX_1M = 1_000_000;
 const CTX_204K = 204_800;
@@ -94,7 +93,7 @@ const OUT_131K = 131_072;
 const OUT_128K = 128_000;
 
 export const SUPPORTED_MODELS: readonly ModelInfo[] = [
-  { id: "MiniMax-M3", name: "MiniMax M3", contextLength: CTX_1M, maxInputTokens: 1_000_000, maxOutputTokens: OUT_131K },
+  { id: "MiniMax-M3", name: "MiniMax M3", contextLength: CTX_1M, maxInputTokens: 1_000_000, maxOutputTokens: OUT_131K, imageInput: true },
   { id: "MiniMax-M2.7", name: "MiniMax M2.7", contextLength: CTX_204K, maxInputTokens: 200_000, maxOutputTokens: OUT_131K },
   { id: "MiniMax-M2.7-highspeed", name: "MiniMax M2.7 (High-Speed)", contextLength: CTX_204K, maxInputTokens: 200_000, maxOutputTokens: OUT_131K },
   { id: "MiniMax-M2.5", name: "MiniMax M2.5", contextLength: CTX_204K, maxInputTokens: 196_000, maxOutputTokens: OUT_128K },
@@ -107,14 +106,6 @@ export const SUPPORTED_MODELS: readonly ModelInfo[] = [
 const MODEL_BY_ID: Readonly<Record<ModelId, ModelInfo>> = Object.fromEntries(
   SUPPORTED_MODELS.map((model) => [model.id, model]),
 ) as Record<ModelId, ModelInfo>;
-
-export function resolveModelIdForApi(id: string): string {
-  const info = getModelById(id);
-  if (!info) {
-    return id;
-  }
-  return info.apiModelId ?? info.id;
-}
 
 export function getModelById(id: ModelId): ModelInfo;
 export function getModelById(id: string): ModelInfo | undefined;

@@ -25,12 +25,25 @@ export interface ChatOptions {
 export class MiniMaxClient {
   private readonly defaultBaseUrl = "https://api.minimax.io/v1";
 
-  async *streamChat(
+  /**
+   * Starts a streaming chat request.
+   *
+   * NOTE: This is intentionally NOT an `async *` generator function. With a
+   * generator, the request would only fire when the consumer pulls the first
+   * chunk inside its `for await` loop — which escapes the provider's
+   * try/catch, so a 401 (bad key) never triggers the re-prompt flow and the
+   * user gets asked for the key on every single message.
+   *
+   * Instead, we await the request setup + first chunk here, so auth errors
+   * throw synchronously at the `await` point. The returned generator replays
+   * the first chunk and then continues the stream.
+   */
+  async streamChat(
     model: string,
     messages: MiniMaxMessage[],
     options?: ChatOptions,
     cancellationToken?: vscode.CancellationToken,
-  ): AsyncGenerator<ChatCompletionChunk> {
+  ): Promise<AsyncGenerator<ChatCompletionChunk>> {
     const apiKey = options?.apiKey?.trim();
     if (!apiKey) {
       throw new MiniMaxError("API key is required", "NO_API_KEY", 401);
@@ -71,14 +84,40 @@ export class MiniMaxClient {
         signal: abortController.signal,
       })) as AsyncIterable<ChatCompletionChunk>;
 
-      for await (const chunk of stream) {
+      // Pull the first chunk now, so a request-level error (e.g. 401) throws
+      // here instead of inside the consumer's for-await loop.
+      const iterator = stream[Symbol.asyncIterator]();
+      const first = await iterator.next();
+
+      return this.replay(iterator, first, cancellationToken, cancellationDisposable);
+    } catch (error) {
+      cancellationDisposable?.dispose();
+      throw toMiniMaxError(error);
+    }
+  }
+
+  private async *replay(
+    iterator: AsyncIterator<ChatCompletionChunk>,
+    first: IteratorResult<ChatCompletionChunk>,
+    cancellationToken: vscode.CancellationToken | undefined,
+    cancellationDisposable: vscode.Disposable | undefined,
+  ): AsyncGenerator<ChatCompletionChunk> {
+    try {
+      if (!first.done) {
+        if (!cancellationToken?.isCancellationRequested) {
+          yield first.value;
+        }
+      }
+      while (true) {
         if (cancellationToken?.isCancellationRequested) {
           return;
         }
-        yield chunk;
+        const next = await iterator.next();
+        if (next.done) {
+          return;
+        }
+        yield next.value;
       }
-    } catch (error) {
-      throw toMiniMaxError(error);
     } finally {
       cancellationDisposable?.dispose();
     }
